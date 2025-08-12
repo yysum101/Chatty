@@ -1,588 +1,523 @@
 import os
-import psycopg2
-import psycopg2.extras
 from flask import (
-    Flask, request, session, redirect, url_for,
-    render_template_string, flash, send_from_directory
+    Flask, request, redirect, url_for, session,
+    send_from_directory, abort, flash, render_template_string
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+import psycopg2
+import psycopg2.extras
 from datetime import datetime
-import uuid
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY") or "supersecretkey"
+app.secret_key = os.environ.get("SECRET_KEY", "dev_secret_change_me")
 
-# Config
-DATABASE_URL = os.environ.get("DATABASE_URL")  # Neon postgres URL
-UPLOAD_FOLDER = 'avatars'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+app.config['UPLOAD_FOLDER'] = 'avatars'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Connect to DB
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable not set")
+
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     return conn
 
-# DB init - only create tables if missing
 def init_db():
     conn = get_db()
     cur = conn.cursor()
-    # Check if 'users' table exists
-    cur.execute("""
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_name = 'users'
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(80) UNIQUE NOT NULL,
+            password_hash VARCHAR(128) NOT NULL,
+            nickname VARCHAR(80) NOT NULL,
+            about TEXT,
+            avatar VARCHAR(256)
         );
-    """)
-    if not cur.fetchone()[0]:
-        # Create tables
-        cur.execute("""
-            CREATE TABLE users (
-                id SERIAL PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                nickname TEXT NOT NULL,
-                about TEXT,
-                avatar TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE posts (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                subject TEXT NOT NULL,
-                body TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE comments (
-                id SERIAL PRIMARY KEY,
-                post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                body TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        conn.commit()
-        print("Database initialized.")
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS posts (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            subject TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS comments (
+            id SERIAL PRIMARY KEY,
+            post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    ''')
+    conn.commit()
     cur.close()
     conn.close()
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+init_db()
 
-def get_current_user():
-    if "user_id" in session:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM users WHERE id=%s", (session["user_id"],))
-        user = cur.fetchone()
+def query_db(query, args=(), one=False, commit=False):
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute(query, args)
+    if commit:
+        conn.commit()
         cur.close()
         conn.close()
-        return user
-    return None
-
-@app.route('/')
-def home():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT posts.*, users.nickname FROM posts
-        JOIN users ON posts.user_id = users.id
-        ORDER BY posts.created_at DESC
-        LIMIT 20
-    """)
-    posts = cur.fetchall()
+        return
+    rv = cur.fetchall()
     cur.close()
     conn.close()
+    return (rv[0] if rv else None) if one else rv
+
+def get_user_by_username(username):
+    return query_db('SELECT * FROM users WHERE username = %s', (username,), one=True)
+
+def get_user_by_id(user_id):
+    return query_db('SELECT * FROM users WHERE id = %s', (user_id,), one=True)
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg', 'gif'}
+
+def login_required(func):
+    from functools import wraps
+    @wraps(func)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            flash("Please login first.")
+            return redirect(url_for('login'))
+        return func(*args, **kwargs)
+    return decorated
+
+@app.route('/avatars/<filename>')
+def avatar(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/')
+@login_required
+def home():
+    posts = query_db('''
+        SELECT posts.*, users.nickname, users.id AS user_id FROM posts
+        JOIN users ON posts.user_id = users.id
+        ORDER BY posts.created DESC
+    ''')
+    user = get_user_by_id(session['user_id'])
     return render_template_string(TEMPLATE_HOME, posts=posts, user=user)
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form['username'].strip()
-        password = request.form['password']
-        confirm = request.form['confirm']
-        nickname = request.form['nickname'].strip()
-        about = request.form['about'].strip()
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        confirm = request.form.get('confirm', '')
+        nickname = request.form.get('nickname', '').strip()
+        about = request.form.get('about', '').strip()
 
         if not username or not password or not confirm or not nickname:
-            flash("Please fill in all required fields.", "danger")
+            flash("Please fill all required fields.")
             return redirect(url_for('register'))
+
         if password != confirm:
-            flash("Passwords do not match.", "danger")
+            flash("Passwords do not match.")
             return redirect(url_for('register'))
+
+        if get_user_by_username(username):
+            flash("Username already taken.")
+            return redirect(url_for('register'))
+
+        avatar_filename = None
+        avatar_file = request.files.get('avatar')
+        if avatar_file and avatar_file.filename != '' and allowed_file(avatar_file.filename):
+            filename = secure_filename(avatar_file.filename)
+            avatar_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            avatar_file.save(avatar_path)
+            avatar_filename = filename
+
+        password_hash = generate_password_hash(password)
 
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE username=%s", (username,))
-        if cur.fetchone():
-            flash("Username already taken.", "danger")
-            cur.close()
-            conn.close()
-            return redirect(url_for('register'))
-
-        pw_hash = generate_password_hash(password)
-        cur.execute(
-            "INSERT INTO users (username, password_hash, nickname, about) VALUES (%s, %s, %s, %s) RETURNING id",
-            (username, pw_hash, nickname, about)
-        )
-        user_id = cur.fetchone()[0]
+        cur.execute('''
+            INSERT INTO users (username, password_hash, nickname, about, avatar)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (username, password_hash, nickname, about, avatar_filename))
         conn.commit()
         cur.close()
         conn.close()
+        flash("Registered successfully! Please log in.")
+        return redirect(url_for('login'))
 
-        session['user_id'] = user_id
-        flash("Registered successfully!", "success")
-        return redirect(url_for('home'))
     return render_template_string(TEMPLATE_REGISTER)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username'].strip()
-        password = request.form['password']
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
 
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM users WHERE username=%s", (username,))
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if user and check_password_hash(user['password_hash'], password):
-            session['user_id'] = user['id']
-            flash("Logged in successfully.", "success")
-            return redirect(url_for('home'))
-        else:
-            flash("Invalid username or password.", "danger")
+        user = get_user_by_username(username)
+        if not user or not check_password_hash(user['password_hash'], password):
+            flash("Invalid username or password.")
             return redirect(url_for('login'))
+
+        session['user_id'] = user['id']
+        flash(f"Welcome back, {user['nickname']}!")
+        return redirect(url_for('home'))
+
     return render_template_string(TEMPLATE_LOGIN)
 
 @app.route('/logout')
+@login_required
 def logout():
     session.clear()
-    flash("Logged out.", "info")
+    flash("Logged out successfully.")
     return redirect(url_for('login'))
 
 @app.route('/post/create', methods=['GET', 'POST'])
+@login_required
 def create_post():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
     if request.method == 'POST':
-        subject = request.form['subject'].strip()
-        body = request.form['body'].strip()
+        subject = request.form.get('subject', '').strip()
+        body = request.form.get('body', '').strip()
+
         if not subject or not body:
-            flash("Subject and body required.", "danger")
+            flash("Subject and body cannot be empty.")
             return redirect(url_for('create_post'))
+
         conn = get_db()
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO posts (user_id, subject, body) VALUES (%s, %s, %s)",
-            (user['id'], subject, body)
-        )
+        cur.execute('''
+            INSERT INTO posts (user_id, subject, body)
+            VALUES (%s, %s, %s)
+        ''', (session['user_id'], subject, body))
         conn.commit()
         cur.close()
         conn.close()
-        flash("Post created!", "success")
+
+        flash("Post created successfully.")
         return redirect(url_for('home'))
-    return render_template_string(TEMPLATE_CREATE_POST, user=user)
+
+    return render_template_string(TEMPLATE_CREATE_POST)
 
 @app.route('/post/<int:post_id>', methods=['GET', 'POST'])
-def post_detail(post_id):
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT posts.*, users.nickname FROM posts
+@login_required
+def view_post(post_id):
+    post = query_db('''
+        SELECT posts.*, users.nickname, users.id AS user_id FROM posts
         JOIN users ON posts.user_id = users.id
         WHERE posts.id = %s
-    """, (post_id,))
-    post = cur.fetchone()
+    ''', (post_id,), one=True)
     if not post:
-        cur.close()
-        conn.close()
-        flash("Post not found.", "danger")
-        return redirect(url_for('home'))
+        abort(404)
+
+    comments = query_db('''
+        SELECT comments.*, users.nickname, users.id AS user_id FROM comments
+        JOIN users ON comments.user_id = users.id
+        WHERE comments.post_id = %s
+        ORDER BY comments.created ASC
+    ''', (post_id,))
 
     if request.method == 'POST':
         comment_body = request.form.get('comment', '').strip()
-        if comment_body:
-            cur.execute("""
-                INSERT INTO comments (post_id, user_id, body)
-                VALUES (%s, %s, %s)
-            """, (post_id, user['id'], comment_body))
-            conn.commit()
-            flash("Comment added.", "success")
-
-    cur.execute("""
-        SELECT comments.*, users.nickname FROM comments
-        JOIN users ON comments.user_id = users.id
-        WHERE comments.post_id = %s
-        ORDER BY comments.created_at ASC
-    """, (post_id,))
-    comments = cur.fetchall()
-
-    cur.close()
-    conn.close()
-    return render_template_string(TEMPLATE_POST_DETAIL, post=post, comments=comments, user=user)
-
-@app.route('/profile/<int:user_id>')
-def profile(user_id):
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
-    profile = cur.fetchone()
-    if not profile:
-        cur.close()
-        conn.close()
-        flash("User not found.", "danger")
-        return redirect(url_for('home'))
-    cur.close()
-    conn.close()
-    return render_template_string(TEMPLATE_PROFILE, profile=profile, user=user)
-
-@app.route('/avatar/<filename>')
-def avatar(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-@app.route('/settings', methods=['GET', 'POST'])
-def settings():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-
-    if request.method == 'POST':
-        nickname = request.form['nickname'].strip()
-        about = request.form['about'].strip()
-
-        avatar_file = request.files.get('avatar')
-        avatar_filename = None
-
-        if avatar_file and allowed_file(avatar_file.filename):
-            filename = secure_filename(avatar_file.filename)
-            unique_name = f"{uuid.uuid4().hex}_{filename}"
-            avatar_file.save(os.path.join(app.config['UPLOAD_FOLDER'], unique_name))
-            avatar_filename = unique_name
+        if comment_body == '':
+            flash("Comment cannot be empty.")
+            return redirect(url_for('view_post', post_id=post_id))
 
         conn = get_db()
         cur = conn.cursor()
-        if avatar_filename:
-            cur.execute("""
-                UPDATE users SET nickname=%s, about=%s, avatar=%s WHERE id=%s
-            """, (nickname, about, avatar_filename, user['id']))
-        else:
-            cur.execute("""
-                UPDATE users SET nickname=%s, about=%s WHERE id=%s
-            """, (nickname, about, user['id']))
+        cur.execute('''
+            INSERT INTO comments (post_id, user_id, body)
+            VALUES (%s, %s, %s)
+        ''', (post_id, session['user_id'], comment_body))
         conn.commit()
         cur.close()
         conn.close()
-        flash("Settings updated.", "success")
+
+        return redirect(url_for('view_post', post_id=post_id))
+
+    user = get_user_by_id(session['user_id'])
+    return render_template_string(TEMPLATE_VIEW_POST, post=post, comments=comments, user=user)
+
+@app.route('/profile/<int:user_id>')
+@login_required
+def profile(user_id):
+    profile = get_user_by_id(user_id)
+    if not profile:
+        abort(404)
+    return render_template_string(TEMPLATE_PROFILE, profile=profile)
+
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    user = get_user_by_id(session['user_id'])
+    if request.method == 'POST':
+        nickname = request.form.get('nickname', '').strip()
+        about = request.form.get('about', '').strip()
+
+        if not nickname:
+            flash("Nickname cannot be empty.")
+            return redirect(url_for('settings'))
+
+        avatar_filename = user['avatar']
+        avatar_file = request.files.get('avatar')
+        if avatar_file and avatar_file.filename != '' and allowed_file(avatar_file.filename):
+            filename = secure_filename(avatar_file.filename)
+            avatar_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            avatar_file.save(avatar_path)
+            avatar_filename = filename
+
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('''
+            UPDATE users SET nickname = %s, about = %s, avatar = %s WHERE id = %s
+        ''', (nickname, about, avatar_filename, session['user_id']))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        flash("Profile updated.")
         return redirect(url_for('settings'))
 
     return render_template_string(TEMPLATE_SETTINGS, user=user)
 
-# Inline Bootstrap 5 Blue-Green theme templates:
+# --- Inline Templates ---
 
 TEMPLATE_BASE = '''
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chatterbox - {{ title or "" }}</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-<style>
-  body { background: white; color: #0f5132; }
-  .navbar, .footer {
-    background: linear-gradient(45deg, #009879, #3ecf8e);
-    color: white !important;
-  }
-  .navbar-brand, .nav-link, .footer {
-    color: white !important;
-  }
-  a.nav-link:hover {
-    color: #d4f1e4 !important;
-  }
-  .avatar {
-    border-radius: 50%;
-    width: 48px;
-    height: 48px;
-    object-fit: cover;
-    border: 2px solid #006644;
-  }
-  .footer {
-    position: fixed;
-    bottom: 0;
-    width: 100%;
-    height: 40px;
-    line-height: 40px;
-    text-align: center;
-    font-weight: bold;
-    font-size: 14px;
-  }
-</style>
+    <meta charset="utf-8">
+    <title>Chatterbox - {{ title or "Home" }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body { background: white; color: #054a29; }
+      .navbar { background: linear-gradient(45deg, #00796b, #004d40); }
+      .navbar-brand, .nav-link, .nav-item { color: #a5d6a7 !important; }
+      .btn-primary { background-color: #00796b; border-color: #004d40; }
+      .btn-primary:hover { background-color: #004d40; border-color: #00251a; }
+      .avatar { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; }
+      footer { position: fixed; bottom: 0; width: 100%; background: #004d40; color: white; padding: 0.5rem 0; text-align: center;}
+      .container { padding-bottom: 60px; }
+    </style>
 </head>
 <body>
-
 <nav class="navbar navbar-expand-lg">
-  <div class="container-fluid">
+  <div class="container">
     <a class="navbar-brand fw-bold" href="{{ url_for('home') }}">Chatterbox</a>
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navmenu"
-      aria-controls="navmenu" aria-expanded="false" aria-label="Toggle navigation">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    {% if user %}
-    <div class="collapse navbar-collapse" id="navmenu">
-      <ul class="navbar-nav ms-auto mb-2 mb-lg-0 align-items-center">
-        <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('home') }}">Home</a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('create_post') }}">New Post</a>
-        </li>
-        <li class="nav-item dropdown">
-          <a class="nav-link dropdown-toggle d-flex align-items-center" href="#" id="userMenu" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-            {% if user.avatar %}
-              <img src="{{ url_for('avatar', filename=user.avatar) }}" alt="Avatar" class="avatar me-2">
-            {% else %}
-              <img src="https://via.placeholder.com/48?text=?" alt="Avatar" class="avatar me-2">
-            {% endif %}
-            {{ user.nickname }}
-          </a>
-          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userMenu">
-            <li><a class="dropdown-item" href="{{ url_for('profile', user_id=user.id) }}">Profile</a></li>
-            <li><a class="dropdown-item" href="{{ url_for('settings') }}">Settings</a></li>
-            <li><hr class="dropdown-divider"></li>
-            <li><a class="dropdown-item text-danger" href="{{ url_for('logout') }}">Logout</a></li>
-          </ul>
-        </li>
-      </ul>
-    </div>
-    {% endif %}
+    <ul class="navbar-nav ms-auto">
+      {% if session.get('user_id') %}
+      <li class="nav-item"><a class="nav-link" href="{{ url_for('home') }}">Home</a></li>
+      <li class="nav-item"><a class="nav-link" href="{{ url_for('create_post') }}">New Post</a></li>
+      <li class="nav-item"><a class="nav-link" href="{{ url_for('settings') }}">Settings</a></li>
+      <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
+      {% else %}
+      <li class="nav-item"><a class="nav-link" href="{{ url_for('login') }}">Login</a></li>
+      <li class="nav-item"><a class="nav-link" href="{{ url_for('register') }}">Register</a></li>
+      {% endif %}
+    </ul>
   </div>
 </nav>
 
-<div class="container my-4">
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      {% for category, msg in messages %}
-        <div class="alert alert-{{category}} alert-dismissible fade show" role="alert">
-          {{ msg }}
-          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+<div class="container mt-4">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="alert alert-info">
+          {% for msg in messages %}
+            <div>{{ msg }}</div>
+          {% endfor %}
         </div>
-      {% endfor %}
-    {% endif %}
-  {% endwith %}
-  {% block content %}{% endblock %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
 </div>
 
-<footer class="footer">
-  Chatterbox © 2025 by Chicken
+<footer>
+    &copy; 2025 Chatterbox by Chicken
 </footer>
 
+<!-- Bootstrap 5 JS bundle -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 '''
 
-TEMPLATE_LOGIN = '''
-{% extends none %}
-{% block content %}
-<h2>Login</h2>
-<form method="post" class="mb-3">
-  <div class="mb-3">
-    <label for="username" class="form-label">Username</label>
-    <input required type="text" class="form-control" id="username" name="username" placeholder="Enter username">
-  </div>
-  <div class="mb-3">
-    <label for="password" class="form-label">Password</label>
-    <input required type="password" class="form-control" id="password" name="password" placeholder="Enter password">
-  </div>
-  <button type="submit" class="btn btn-success">Login</button>
-  <a href="{{ url_for('register') }}" class="btn btn-link">Register</a>
-</form>
-{% endblock %}
-'''
-
-TEMPLATE_REGISTER = '''
-{% extends none %}
-{% block content %}
-<h2>Register</h2>
-<form method="post" class="mb-3">
-  <div class="mb-3">
-    <label for="username" class="form-label">Username</label>
-    <input required type="text" class="form-control" id="username" name="username" placeholder="Choose username">
-  </div>
-  <div class="mb-3">
-    <label for="nickname" class="form-label">Nickname</label>
-    <input required type="text" class="form-control" id="nickname" name="nickname" placeholder="Your nickname">
-  </div>
-  <div class="mb-3">
-    <label for="about" class="form-label">Tell us about yourself</label>
-    <textarea class="form-control" id="about" name="about" rows="3" placeholder="Optional"></textarea>
-  </div>
-  <div class="mb-3">
-    <label for="password" class="form-label">Password</label>
-    <input required type="password" class="form-control" id="password" name="password" placeholder="Choose password">
-  </div>
-  <div class="mb-3">
-    <label for="confirm" class="form-label">Confirm Password</label>
-    <input required type="password" class="form-control" id="confirm" name="confirm" placeholder="Confirm password">
-  </div>
-  <button type="submit" class="btn btn-success">Register</button>
-  <a href="{{ url_for('login') }}" class="btn btn-link">Back to Login</a>
-</form>
-{% endblock %}
-'''
-
 TEMPLATE_HOME = '''
-{% extends none %}
+{% extends None %}
 {% block content %}
 <h2>Recent Posts</h2>
 {% if posts %}
-  {% for post in posts %}
-  <div class="card mb-3 shadow-sm">
-    <div class="card-header d-flex align-items-center">
-      <a href="{{ url_for('profile', user_id=post.user_id) }}" class="me-3 text-decoration-none text-success">
-        {{ post.nickname }}
-      </a>
-      <div class="flex-grow-1 fw-bold">{{ post.subject }}</div>
-      <small class="text-muted">{{ post.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
-    </div>
-    <div class="card-body">
-      <p>{{ post.body }}</p>
-      <a href="{{ url_for('post_detail', post_id=post.id) }}" class="btn btn-outline-success btn-sm">View & Comment</a>
-    </div>
+  <div class="list-group">
+    {% for post in posts %}
+    <a href="{{ url_for('view_post', post_id=post.id) }}" class="list-group-item list-group-item-action">
+      <h5 class="mb-1">{{ post.subject }}</h5>
+      <small>By <a href="{{ url_for('profile', user_id=post.user_id) }}">{{ post.nickname }}</a> on {{ post.created.strftime('%Y-%m-%d %H:%M') }}</small>
+      <p class="mb-1 text-truncate" style="max-width:600px;">{{ post.body }}</p>
+    </a>
+    {% endfor %}
   </div>
-  {% endfor %}
 {% else %}
-  <p>No posts yet. <a href="{{ url_for('create_post') }}">Create the first one!</a></p>
+  <p>No posts yet. <a href="{{ url_for('create_post') }}">Create one</a>.</p>
 {% endif %}
 {% endblock %}
-'''
+''' + TEMPLATE_BASE
+
+TEMPLATE_REGISTER = '''
+{% extends None %}
+{% block content %}
+<h2>Register</h2>
+<form method="POST" enctype="multipart/form-data" class="mb-5">
+  <div class="mb-3">
+    <label for="username" class="form-label">Username *</label>
+    <input class="form-control" type="text" name="username" id="username" required maxlength="80">
+  </div>
+  <div class="mb-3">
+    <label for="password" class="form-label">Password *</label>
+    <input class="form-control" type="password" name="password" id="password" required>
+  </div>
+  <div class="mb-3">
+    <label for="confirm" class="form-label">Confirm Password *</label>
+    <input class="form-control" type="password" name="confirm" id="confirm" required>
+  </div>
+  <div class="mb-3">
+    <label for="nickname" class="form-label">Nickname *</label>
+    <input class="form-control" type="text" name="nickname" id="nickname" required maxlength="80">
+  </div>
+  <div class="mb-3">
+    <label for="about" class="form-label">About Yourself</label>
+    <textarea class="form-control" name="about" id="about" rows="3" maxlength="500"></textarea>
+  </div>
+  <div class="mb-3">
+    <label for="avatar" class="form-label">Avatar (optional, image files only)</label>
+    <input class="form-control" type="file" name="avatar" id="avatar" accept="image/*">
+  </div>
+  <button class="btn btn-primary" type="submit">Register</button>
+  <a href="{{ url_for('login') }}" class="btn btn-secondary ms-2">Already have an account? Login</a>
+</form>
+{% endblock %}
+''' + TEMPLATE_BASE
+
+TEMPLATE_LOGIN = '''
+{% extends None %}
+{% block content %}
+<h2>Login</h2>
+<form method="POST" class="mb-5">
+  <div class="mb-3">
+    <label for="username" class="form-label">Username</label>
+    <input class="form-control" type="text" name="username" id="username" required maxlength="80">
+  </div>
+  <div class="mb-3">
+    <label for="password" class="form-label">Password</label>
+    <input class="form-control" type="password" name="password" id="password" required>
+  </div>
+  <button class="btn btn-primary" type="submit">Login</button>
+  <a href="{{ url_for('register') }}" class="btn btn-secondary ms-2">Register here</a>
+</form>
+{% endblock %}
+''' + TEMPLATE_BASE
 
 TEMPLATE_CREATE_POST = '''
-{% extends none %}
+{% extends None %}
 {% block content %}
-<h2>Create New Post</h2>
-<form method="post" class="mb-3">
+<h2>Create Post</h2>
+<form method="POST" class="mb-5">
   <div class="mb-3">
     <label for="subject" class="form-label">Subject</label>
-    <input required type="text" class="form-control" id="subject" name="subject" placeholder="Post subject">
+    <input class="form-control" name="subject" id="subject" required maxlength="200">
   </div>
   <div class="mb-3">
     <label for="body" class="form-label">Body</label>
-    <textarea required class="form-control" id="body" name="body" rows="5" placeholder="Write your post here..."></textarea>
+    <textarea class="form-control" name="body" id="body" rows="6" required maxlength="2000"></textarea>
   </div>
-  <button type="submit" class="btn btn-success">Post</button>
-  <a href="{{ url_for('home') }}" class="btn btn-link">Cancel</a>
+  <button class="btn btn-primary" type="submit">Submit</button>
+  <a href="{{ url_for('home') }}" class="btn btn-secondary ms-2">Cancel</a>
 </form>
 {% endblock %}
-'''
+''' + TEMPLATE_BASE
 
-TEMPLATE_POST_DETAIL = '''
-{% extends none %}
+TEMPLATE_VIEW_POST = '''
+{% extends None %}
 {% block content %}
 <h2>{{ post.subject }}</h2>
-<div class="mb-3 text-muted">
-  By <a href="{{ url_for('profile', user_id=post.user_id) }}">{{ post.nickname }}</a> on {{ post.created_at.strftime('%Y-%m-%d %H:%M') }}
-</div>
-<p>{{ post.body }}</p>
-<hr>
+<p>By <a href="{{ url_for('profile', user_id=post.user_id) }}">{{ post.nickname }}</a> on {{ post.created.strftime('%Y-%m-%d %H:%M') }}</p>
+<div class="mb-4" style="white-space: pre-wrap;">{{ post.body }}</div>
+
 <h4>Comments</h4>
 {% if comments %}
-  {% for c in comments %}
-  <div class="mb-2 border p-2 rounded">
-    <small class="text-success">{{ c.nickname }} said on {{ c.created_at.strftime('%Y-%m-%d %H:%M') }}:</small>
-    <p>{{ c.body }}</p>
-  </div>
-  {% endfor %}
+  <ul class="list-group mb-4">
+    {% for comment in comments %}
+    <li class="list-group-item">
+      <strong><a href="{{ url_for('profile', user_id=comment.user_id) }}">{{ comment.nickname }}</a>:</strong>
+      <span>{{ comment.body }}</span>
+      <small class="text-muted float-end">{{ comment.created.strftime('%Y-%m-%d %H:%M') }}</small>
+    </li>
+    {% endfor %}
+  </ul>
 {% else %}
   <p>No comments yet.</p>
 {% endif %}
-<hr>
-<h5>Add Comment</h5>
-<form method="post" class="mb-3">
-  <textarea required class="form-control mb-2" name="comment" rows="3" placeholder="Write a comment..."></textarea>
-  <button type="submit" class="btn btn-success btn-sm">Submit</button>
-  <a href="{{ url_for('home') }}" class="btn btn-link btn-sm">Back</a>
+
+<form method="POST">
+  <div class="mb-3">
+    <label for="comment" class="form-label">Add a comment</label>
+    <textarea class="form-control" id="comment" name="comment" rows="3" maxlength="1000" required></textarea>
+  </div>
+  <button type="submit" class="btn btn-primary">Submit Comment</button>
+  <a href="{{ url_for('home') }}" class="btn btn-secondary ms-2">Back to Posts</a>
 </form>
 {% endblock %}
-'''
+''' + TEMPLATE_BASE
 
 TEMPLATE_PROFILE = '''
-{% extends none %}
+{% extends None %}
 {% block content %}
 <h2>{{ profile.nickname }}'s Profile</h2>
-<div class="d-flex align-items-center mb-3">
-  {% if profile.avatar %}
-    <img src="{{ url_for('avatar', filename=profile.avatar) }}" alt="Avatar" class="avatar me-3" style="width:96px; height:96px;">
-  {% else %}
-    <img src="https://via.placeholder.com/96?text=?" alt="Avatar" class="avatar me-3" style="width:96px; height:96px;">
-  {% endif %}
-  <div>
-    <p><strong>Username:</strong> {{ profile.username }}</p>
-    <p><strong>About:</strong> {{ profile.about or "No info provided." }}</p>
-    <p><strong>Joined:</strong> {{ profile.created_at.strftime('%Y-%m-%d') }}</p>
+{% if profile.avatar %}
+  <img src="{{ url_for('avatar', filename=profile.avatar) }}" alt="Avatar" class="avatar mb-3">
+{% else %}
+  <div class="avatar bg-secondary text-white d-flex align-items-center justify-content-center mb-3" style="font-size: 2rem;">
+    {{ profile.nickname[0]|upper }}
   </div>
-</div>
-<a href="{{ url_for('home') }}" class="btn btn-link">Back Home</a>
+{% endif %}
+<p><strong>Username:</strong> {{ profile.username }}</p>
+{% if profile.about %}
+<p><strong>About:</strong><br>{{ profile.about|e|replace('\n', '<br>')|safe }}</p>
+{% endif %}
+<a href="{{ url_for('home') }}" class="btn btn-secondary">Back to Home</a>
 {% endblock %}
-'''
+''' + TEMPLATE_BASE
 
 TEMPLATE_SETTINGS = '''
-{% extends none %}
+{% extends None %}
 {% block content %}
 <h2>Settings</h2>
-<form method="post" enctype="multipart/form-data" class="mb-3">
+<form method="POST" enctype="multipart/form-data" class="mb-5">
   <div class="mb-3">
-    <label for="nickname" class="form-label">Nickname</label>
-    <input required type="text" class="form-control" id="nickname" name="nickname" value="{{ user.nickname }}">
+    <label for="nickname" class="form-label">Nickname *</label>
+    <input class="form-control" type="text" name="nickname" id="nickname" value="{{ user.nickname }}" required maxlength="80">
   </div>
   <div class="mb-3">
-    <label for="about" class="form-label">About</label>
-    <textarea class="form-control" id="about" name="about" rows="3">{{ user.about }}</textarea>
+    <label for="about" class="form-label">About Yourself</label>
+    <textarea class="form-control" name="about" id="about" rows="4" maxlength="500">{{ user.about }}</textarea>
   </div>
   <div class="mb-3">
-    <label for="avatar" class="form-label">Avatar (png/jpg/gif, max 2MB)</label>
-    <input type="file" class="form-control" id="avatar" name="avatar" accept=".png,.jpg,.jpeg,.gif">
+    <label for="avatar" class="form-label">Change Avatar (optional)</label>
+    <input class="form-control" type="file" name="avatar" id="avatar" accept="image/*">
   </div>
-  <button type="submit" class="btn btn-success">Update Settings</button>
-  <a href="{{ url_for('home') }}" class="btn btn-link">Cancel</a>
+  {% if user.avatar %}
+  <p>Current Avatar:</p>
+  <img src="{{ url_for('avatar', filename=user.avatar) }}" alt="Current avatar" class="avatar mb-3">
+  {% endif %}
+  <button class="btn btn-primary" type="submit">Save Changes</button>
+  <a href="{{ url_for('home') }}" class="btn btn-secondary ms-2">Cancel</a>
 </form>
 {% endblock %}
-'''
-
-# Render Templates Wrapper (to use TEMPLATE_BASE with inline templates)
-def render_template_string(tpl, **context):
-    base = TEMPLATE_BASE.replace("{% block content %}{% endblock %}", tpl)
-    return render_template_string_original(base, **context)
-
-# Save original to avoid recursion
-render_template_string_original = render_template_string
-
-# Override Flask's render_template_string to our wrapper
-import flask.templating
-flask.templating.render_template_string = render_template_string
-
-# Init DB on start
-init_db()
+''' + TEMPLATE_BASE
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+    app.run(debug=True)
