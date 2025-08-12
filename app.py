@@ -217,24 +217,16 @@ def new_post():
 def not_found(e):
     return render_template_string(TEMPLATE_404), 404
 
-# --- TEMPLATES ---
-# Blue-green with white background theme
+# === Templates ===
 
-TEMPLATE_BASE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{{ title or "Chatterbox" }}</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+BASE_CSS = '''
 <style>
   body {
     background: #f9fefa;
     color: #114b5f;
   }
   .navbar, .footer {
-    background: linear-gradient(45deg, #56ab2f, #a8e063);
+    background: linear-gradient(45deg, #1f8a70, #a8e063);
     color: white !important;
   }
   .navbar a, .footer a {
@@ -247,14 +239,14 @@ TEMPLATE_BASE = '''
     object-fit: cover;
   }
   .post-subject {
-    color: #1f8a70;
+    color: #16664e;
   }
   .btn-primary {
-    background: #1f8a70;
+    background: #16664e;
     border: none;
   }
   .btn-primary:hover {
-    background: #16664e;
+    background: #114b5f;
   }
   footer.footer {
     position: fixed;
@@ -270,8 +262,9 @@ TEMPLATE_BASE = '''
     margin-bottom: 8px;
   }
 </style>
-</head>
-<body>
+'''
+
+NAVBAR = '''
 <nav class="navbar navbar-expand-lg mb-4">
   <div class="container">
     <a class="navbar-brand fw-bold" href="{{ url_for('home') }}">Chatterbox</a>
@@ -288,210 +281,361 @@ TEMPLATE_BASE = '''
     </div>
   </div>
 </nav>
-<div class="container">
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      {% for category, msg in messages %}
-        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-          {{ msg }}
-          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-        </div>
-      {% endfor %}
-    {% endif %}
-  {% endwith %}
-  {% block content %}{% endblock %}
-</div>
+'''
+
+FOOTER = '''
 <footer class="footer bg-success text-white mt-5">
   <div class="container">© 2025 Chatterbox by Chicken</div>
 </footer>
+'''
+
+TEMPLATE_LOGIN = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Login - Chatterbox</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+{BASE_CSS}
+</head>
+<body>
+{NAVBAR}
+<div class="container">
+  <h2>Login</h2>
+  {{% with messages = get_flashed_messages(with_categories=true) %}}
+    {{% if messages %}}
+      {{% for category, msg in messages %}}
+        <div class="alert alert-{{{{ category }}}} alert-dismissible fade show" role="alert">
+          {{{{ msg }}}}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+      {{% endfor %}}
+    {{% endif %}}
+  {{% endwith %}}
+  <form method="POST">
+    <div class="mb-3">
+      <label>Username</label>
+      <input type="text" name="username" class="form-control" required autofocus />
+    </div>
+    <div class="mb-3">
+      <label>Password</label>
+      <input type="password" name="password" class="form-control" required />
+    </div>
+    <button class="btn btn-primary w-100" type="submit">Login</button>
+  </form>
+  <p class="mt-3">Don't have an account? <a href="/register">Register here</a>.</p>
+</div>
+{FOOTER}
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 '''
 
-TEMPLATE_LOGIN = '''
-{% extends None %}
-{% block content %}
-<div class="row justify-content-center">
-  <div class="col-md-5">
-    <h2>Login</h2>
-    <form method="POST">
-      <div class="mb-3">
-        <label>Username</label>
-        <input type="text" name="username" class="form-control" required autofocus />
-      </div>
-      <div class="mb-3">
-        <label>Password</label>
-        <input type="password" name="password" class="form-control" required />
-      </div>
-      <button class="btn btn-primary w-100" type="submit">Login</button>
-    </form>
-    <p class="mt-3">Don't have an account? <a href="{{ url_for('register') }}">Register here</a>.</p>
-  </div>
-</div>
-{% endblock %}
-''' + TEMPLATE_BASE
-
-TEMPLATE_REGISTER = '''
-{% extends None %}
-{% block content %}
-<div class="row justify-content-center">
-  <div class="col-md-6">
-    <h2>Register</h2>
-    <form method="POST">
-      <div class="mb-3">
-        <label>Username</label>
-        <input type="text" name="username" class="form-control" required autofocus />
-      </div>
-      <div class="mb-3">
-        <label>Password</label>
-        <input type="password" name="password" class="form-control" required />
-      </div>
-      <div class="mb-3">
-        <label>Confirm Password</label>
-        <input type="password" name="confirm" class="form-control" required />
-      </div>
-      <div class="mb-3">
-        <label>Nickname (optional)</label>
-        <input type="text" name="nickname" class="form-control" />
-      </div>
-      <div class="mb-3">
-        <label>About you (optional)</label>
-        <textarea name="about" class="form-control"></textarea>
-      </div>
-      <button class="btn btn-primary w-100" type="submit">Register</button>
-    </form>
-    <p class="mt-3">Already have an account? <a href="{{ url_for('login') }}">Login here</a>.</p>
-  </div>
-</div>
-{% endblock %}
-''' + TEMPLATE_BASE
-
-TEMPLATE_HOME = '''
-{% extends None %}
-{% block content %}
-<h1>Posts</h1>
-{% if posts %}
-  <div class="list-group">
-  {% for p in posts %}
-    <a href="{{ url_for('post_detail', post_id=p.id) }}" class="list-group-item list-group-item-action mb-2">
-      <h5 class="post-subject">{{ p.subject }}</h5>
-      <small>by {{ p.nickname or "Anonymous" }} on {{ p.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
-      <p>{{ p.body[:150] }}{% if p.body|length > 150 %}...{% endif %}</p>
-    </a>
-  {% endfor %}
-  </div>
-{% else %}
-  <p>No posts yet. <a href="{{ url_for('new_post') }}">Create one!</a></p>
-{% endif %}
-{% endblock %}
-''' + TEMPLATE_BASE
-
-TEMPLATE_NEW_POST = '''
-{% extends None %}
-{% block content %}
-<h2>Create New Post</h2>
-<form method="POST">
-  <div class="mb-3">
-    <label>Subject</label>
-    <input type="text" name="subject" class="form-control" required autofocus />
-  </div>
-  <div class="mb-3">
-    <label>Body</label>
-    <textarea name="body" class="form-control" rows="6" required></textarea>
-  </div>
-  <button class="btn btn-primary" type="submit">Post</button>
-  <a href="{{ url_for('home') }}" class="btn btn-secondary ms-2">Cancel</a>
-</form>
-{% endblock %}
-''' + TEMPLATE_BASE
-
-TEMPLATE_POST_DETAIL = '''
-{% extends None %}
-{% block content %}
-<h2>{{ post.subject }}</h2>
-<p><small>by {{ post.nickname or "Anonymous" }} on {{ post.created_at.strftime('%Y-%m-%d %H:%M') }}</small></p>
-<p>{{ post.body }}</p>
-
-<hr />
-<h4>Comments</h4>
-{% if comments %}
-  {% for c in comments %}
-    <div class="comment">
-      <strong>{{ c.nickname or "Anonymous" }}</strong> <small>{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
-      <p>{{ c.body }}</p>
+TEMPLATE_REGISTER = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Register - Chatterbox</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+{BASE_CSS}
+</head>
+<body>
+{NAVBAR}
+<div class="container">
+  <h2>Register</h2>
+  {{% with messages = get_flashed_messages(with_categories=true) %}}
+    {{% if messages %}}
+      {{% for category, msg in messages %}}
+        <div class="alert alert-{{{{ category }}}} alert-dismissible fade show" role="alert">
+          {{{{ msg }}}}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+      {{% endfor %}}
+    {{% endif %}}
+  {{% endwith %}}
+  <form method="POST">
+    <div class="mb-3">
+      <label>Username</label>
+      <input type="text" name="username" class="form-control" required autofocus />
     </div>
-  {% endfor %}
-{% else %}
-  <p>No comments yet.</p>
-{% endif %}
-
-<hr />
-<h5>Add a Comment</h5>
-<form method="POST">
-  <textarea name="body" class="form-control" rows="3" required></textarea>
-  <button class="btn btn-primary mt-2" type="submit">Submit</button>
-</form>
-<a href="{{ url_for('home') }}" class="btn btn-secondary mt-3">Back to Posts</a>
-{% endblock %}
-''' + TEMPLATE_BASE
-
-TEMPLATE_PROFILE = '''
-{% extends None %}
-{% block content %}
-<h2>Profile: {{ profile.nickname or profile.username }}</h2>
-<div class="d-flex align-items-center mb-3">
-  {% if profile.avatar %}
-    <img src="{{ url_for('avatar', filename=profile.avatar) }}" alt="Avatar" class="avatar me-3" />
-  {% else %}
-    <div class="avatar bg-secondary text-white d-flex justify-content-center align-items-center me-3">?</div>
-  {% endif %}
-  <div>
-    <p><strong>Username:</strong> {{ profile.username }}</p>
-    <p><strong>Nickname:</strong> {{ profile.nickname or "N/A" }}</p>
-  </div>
+    <div class="mb-3">
+      <label>Password</label>
+      <input type="password" name="password" class="form-control" required />
+    </div>
+    <div class="mb-3">
+      <label>Confirm Password</label>
+      <input type="password" name="confirm" class="form-control" required />
+    </div>
+    <div class="mb-3">
+      <label>Nickname (optional)</label>
+      <input type="text" name="nickname" class="form-control" />
+    </div>
+    <div class="mb-3">
+      <label>About you (optional)</label>
+      <textarea name="about" class="form-control"></textarea>
+    </div>
+    <button class="btn btn-primary w-100" type="submit">Register</button>
+  </form>
+  <p class="mt-3">Already have an account? <a href="/login">Login here</a>.</p>
 </div>
-<h4>About</h4>
-<p>{{ profile.about or "No info provided." }}</p>
-<a href="{{ url_for('home') }}" class="btn btn-secondary mt-3">Back Home</a>
-{% endblock %}
-''' + TEMPLATE_BASE
+{FOOTER}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+'''
 
-TEMPLATE_SETTINGS = '''
-{% extends None %}
-{% block content %}
-<h2>Settings</h2>
-<form method="POST" enctype="multipart/form-data">
-  <div class="mb-3">
-    <label>Nickname</label>
-    <input type="text" name="nickname" class="form-control" value="{{ user.nickname or '' }}" />
-  </div>
-  <div class="mb-3">
-    <label>About You</label>
-    <textarea name="about" class="form-control">{{ user.about or '' }}</textarea>
-  </div>
-  <div class="mb-3">
-    <label>Avatar</label><br />
-    {% if user.avatar %}
-      <img src="{{ url_for('avatar', filename=user.avatar) }}" class="avatar mb-2" alt="Current avatar" />
-    {% endif %}
-    <input type="file" name="avatar" class="form-control" accept="image/*" />
-  </div>
-  <button class="btn btn-primary" type="submit">Save</button>
-  <a href="{{ url_for('home') }}" class="btn btn-secondary ms-2">Cancel</a>
-</form>
-{% endblock %}
-''' + TEMPLATE_BASE
+TEMPLATE_HOME = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Home - Chatterbox</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+{BASE_CSS}
+</head>
+<body>
+{NAVBAR}
+<div class="container">
+  <h1>Posts</h1>
+  {{% with messages = get_flashed_messages(with_categories=true) %}}
+    {{% if messages %}}
+      {{% for category, msg in messages %}}
+        <div class="alert alert-{{{{ category }}}} alert-dismissible fade show" role="alert">
+          {{{{ msg }}}}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+      {{% endfor %}}
+    {{% endif %}}
+  {{% endwith %}}
+  {{% if posts %}}
+    <div class="list-group">
+    {{% for p in posts %}}
+      <a href="{{{{ url_for('post_detail', post_id=p.id) }}}}" class="list-group-item list-group-item-action mb-2">
+        <h5 class="post-subject">{{{{ p.subject }}}}</h5>
+        <small>by {{{{ p.nickname or "Anonymous" }}}} on {{{{ p.created_at.strftime('%Y-%m-%d %H:%M') }}}}</small>
+        <p>{{{{ p.body[:150] }}}}{{{{ "..." if p.body|length > 150 else "" }}}}</p>
+      </a>
+    {{% endfor %}}
+    </div>
+  {{% else %}}
+    <p>No posts yet. <a href="{{{{ url_for('new_post') }}}}">Create one!</a></p>
+  {{% endif %}}
+</div>
+{FOOTER}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+'''
 
-TEMPLATE_404 = '''
-{% extends None %}
-{% block content %}
-<h2>404 - Not Found</h2>
-<p>Sorry, the page you are looking for does not exist.</p>
-<a href="{{ url_for('home') }}" class="btn btn-primary">Home</a>
-{% endblock %}
-''' + TEMPLATE_BASE
+TEMPLATE_NEW_POST = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>New Post - Chatterbox</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+{BASE_CSS}
+</head>
+<body>
+{NAVBAR}
+<div class="container">
+  <h2>Create New Post</h2>
+  {{% with messages = get_flashed_messages(with_categories=true) %}}
+    {{% if messages %}}
+      {{% for category, msg in messages %}}
+        <div class="alert alert-{{{{ category }}}} alert-dismissible fade show" role="alert">
+          {{{{ msg }}}}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+      {{% endfor %}}
+    {{% endif %}}
+  {{% endwith %}}
+  <form method="POST">
+    <div class="mb-3">
+      <label>Subject</label>
+      <input type="text" name="subject" class="form-control" required autofocus />
+    </div>
+    <div class="mb-3">
+      <label>Body</label>
+      <textarea name="body" rows="6" class="form-control" required></textarea>
+    </div>
+    <button class="btn btn-primary" type="submit">Post</button>
+    <a href="{{{{ url_for('home') }}}}" class="btn btn-secondary ms-2">Cancel</a>
+  </form>
+</div>
+{FOOTER}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+'''
 
-if __name__ == '__main__':
+TEMPLATE_POST_DETAIL = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{{{{ post.subject }}}} - Chatterbox</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+{BASE_CSS}
+</head>
+<body>
+{NAVBAR}
+<div class="container">
+  <h2>{{{{ post.subject }}}}</h2>
+  <p><strong>By:</strong> {{{{ post.nickname or "Anonymous" }}}}</p>
+  <p>{{{{ post.body }}}}</p>
+  <hr />
+  <h4>Comments</h4>
+  {{% with messages = get_flashed_messages(with_categories=true) %}}
+    {{% if messages %}}
+      {{% for category, msg in messages %}}
+        <div class="alert alert-{{{{ category }}}} alert-dismissible fade show" role="alert">
+          {{{{ msg }}}}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+      {{% endfor %}}
+    {{% endif %}}
+  {{% endwith %}}
+  {{% if comments %}}
+    {{% for c in comments %}}
+      <div class="comment">
+        <p><strong>{{{{ c.nickname or "Anonymous" }}}}:</strong> {{{{ c.body }}}}</p>
+      </div>
+    {{% endfor %}}
+  {{% else %}}
+    <p>No comments yet.</p>
+  {{% endif %}}
+  <form method="POST" class="mt-3">
+    <div class="mb-3">
+      <label>Add a comment</label>
+      <textarea name="body" rows="3" class="form-control" required></textarea>
+    </div>
+    <button class="btn btn-primary" type="submit">Submit Comment</button>
+  </form>
+  <a href="{{{{ url_for('home') }}}}" class="btn btn-secondary mt-3">Back to posts</a>
+</div>
+{FOOTER}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+'''
+
+TEMPLATE_PROFILE = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Profile - Chatterbox</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+{BASE_CSS}
+</head>
+<body>
+{NAVBAR}
+<div class="container">
+  <h2>Profile: {{{{ profile.nickname or profile.username }}}}</h2>
+  {% if profile.avatar %}
+    <img src="{{{{ url_for('avatar', filename=profile.avatar) }}}}" class="avatar mb-3" alt="Avatar" />
+  {% else %}
+    <img src="https://via.placeholder.com/50" class="avatar mb-3" alt="No Avatar" />
+  {% endif %}
+  <p><strong>Username:</strong> {{{{ profile.username }}}}</p>
+  <p><strong>About:</strong><br />{{{{ profile.about or "No info provided." }}}}</p>
+  <a href="{{{{ url_for('home') }}}}" class="btn btn-secondary mt-3">Back to Home</a>
+</div>
+{FOOTER}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+'''
+
+TEMPLATE_SETTINGS = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Settings - Chatterbox</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+{BASE_CSS}
+<style>
+.avatar {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+</style>
+</head>
+<body>
+{NAVBAR}
+<div class="container">
+  <h2>Settings</h2>
+  {{% with messages = get_flashed_messages(with_categories=true) %}}
+    {{% if messages %}}
+      {{% for category, msg in messages %}}
+        <div class="alert alert-{{{{ category }}}} alert-dismissible fade show" role="alert">
+          {{{{ msg }}}}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+      {{% endfor %}}
+    {{% endif %}}
+  {{% endwith %}}
+  <form method="POST" enctype="multipart/form-data">
+    <div class="mb-3">
+      <label>Nickname</label>
+      <input type="text" name="nickname" class="form-control" value="{{{{ user.nickname or "" }}}}" />
+    </div>
+    <div class="mb-3">
+      <label>About</label>
+      <textarea name="about" class="form-control">{{{{ user.about or "" }}}}</textarea>
+    </div>
+    <div class="mb-3">
+      <label>Avatar</label><br />
+      {% if user.avatar %}
+        <img src="{{{{ url_for('avatar', filename=user.avatar) }}}}" class="avatar mb-2" alt="Current avatar" />
+      {% endif %}
+      <input type="file" name="avatar" class="form-control" accept="image/*" />
+    </div>
+    <button class="btn btn-primary" type="submit">Save</button>
+    <a href="{{{{ url_for('home') }}}}" class="btn btn-secondary ms-2">Cancel</a>
+  </form>
+</div>
+{FOOTER}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+'''
+
+TEMPLATE_404 = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>404 - Not Found</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+{BASE_CSS}
+</head>
+<body>
+{NAVBAR}
+<div class="container text-center">
+  <h2>404 - Not Found</h2>
+  <p>Sorry, the page you requested does not exist.</p>
+  <a href="{{{{ url_for('home') }}}}" class="btn btn-primary">Home</a>
+</div>
+{FOOTER}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+'''
+
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port, debug=True)
