@@ -1,17 +1,25 @@
-# Use official Python slim image
+# Use official Python 3.11 slim image
 FROM python:3.11-slim
 
+# Set working directory inside container
 WORKDIR /app
 
-# Install system dependencies for psycopg2
-RUN apt-get update && apt-get install -y build-essential libpq-dev && rm -rf /var/lib/apt/lists/*
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
 
-COPY requirements.txt requirements.txt
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy app code
+COPY app.py .
+RUN mkdir -p avatars
 
-ENV PORT 8080
+# Expose port 8080 (Render default)
 EXPOSE 8080
 
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080"]
+# Set environment variables for Flask (optional)
+ENV FLASK_ENV=production
+ENV PORT=8080
+
+# Run the app with Gunicorn on port 8080, 1 worker
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "app:app", "--workers", "1", "--timeout", "120"]
